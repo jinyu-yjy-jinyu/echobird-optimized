@@ -1,8 +1,9 @@
 name: Mirror release to China
 
 on:
-  release:
-    types: [published]
+  # Fork note: `release: types: [published]` is disabled. Mirroring hard-fails
+  # without CNB_TOKEN / GITCODE_TOKEN, which this repository does not set, and
+  # it would turn every release into a red run.
   workflow_dispatch:
     inputs:
       tag:

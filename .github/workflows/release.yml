@@ -1,9 +1,11 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Fork note: the `push: tags: v*` trigger is disabled. This repository has no
+  # code-signing or China-mirror secrets, and only ships the Windows installer
+  # (build-windows.yml owns release creation for a tag). Leaving the tag trigger
+  # on would start a 5-platform matrix that cannot succeed and would race
+  # build-windows.yml for the same release object.
   workflow_dispatch:
     inputs:
       tag:

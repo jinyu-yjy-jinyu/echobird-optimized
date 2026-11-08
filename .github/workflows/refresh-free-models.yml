@@ -1,9 +1,9 @@
 name: Refresh Free Model Catalog
 
 on:
-  schedule:
-    # 11:35 and 23:35 Asia/Shanghai. Keep existing entries and append verified discoveries.
-    - cron: '35 3,15 * * *'
+  # Fork note: the twice-daily cron is disabled. It commits catalog updates to
+  # this repository, which is a fork kept in sync with the release build, not a
+  # catalog source. Run it manually if a refresh is ever wanted.
   workflow_dispatch:
 
 permissions:
