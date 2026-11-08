@@ -1,0 +1,11 @@
+{
+  "version": "6.2.3",
+  "releaseDate": "2026-11-07",
+  "releaseNotes": "## 桌面加载与切换体验优化\n\n- 优化应用桌面首次打开时的图标与名称显示，减少图标陆续出现；刷新时保留当前桌面，慢加载和失败时提供稳定占位。\n- 改善智能接入卡片切换，保留左右箭头的悬停展开位置，让连续点击与内容过渡更平滑。\n- 统一各工具添加账号、账号列表、功能标签和模型区域的间距，修正 ZCode 等工具的额外留白。\n- 调整 Windows 和 Linux 应用图标的透明留白，改善任务栏及应用启动器中图标偏小的问题。\n- 修复 Windows 部分标签选中与流动动画的显示，统一标签切换反馈。\n- 更新下载按钮改用圆形进度反馈，清晰显示下载进度。",
+  "releaseNotesI18n": {
+    "zh-cn": "## 桌面加载与切换体验优化\n\n- 优化应用桌面首次打开时的图标与名称显示，减少图标陆续出现；刷新时保留当前桌面，慢加载和失败时提供稳定占位。\n- 改善智能接入卡片切换，保留左右箭头的悬停展开位置，让连续点击与内容过渡更平滑。\n- 统一各工具添加账号、账号列表、功能标签和模型区域的间距，修正 ZCode 等工具的额外留白。\n- 调整 Windows 和 Linux 应用图标的透明留白，改善任务栏及应用启动器中图标偏小的问题。\n- 修复 Windows 部分标签选中与流动动画的显示，统一标签切换反馈。\n- 更新下载按钮改用圆形进度反馈，清晰显示下载进度。",
+    "en": "## Smoother desktop loading and switching\n\n- Improved how App Desktop icons and names appear on first launch. Refresh keeps the current desktop visible, with stable placeholders for slow or failed images.\n- Smoothed Smart Access card transitions while preserving arrow hover expansion during repeated clicks.\n- Standardized spacing between add-account controls, account lists, capability tags and models, including excess spacing in ZCode.\n- Reduced transparent padding in Windows and Linux application icons so they appear at a more consistent size in taskbars and launchers.\n- Fixed selected-tab rendering and flowing animations on Windows for consistent switching feedback.\n- Added circular download progress feedback to the update button.",
+    "zh-tw": "## 桌面載入與切換體驗改善\n\n- 改善應用桌面首次開啟時圖示與名稱的顯示，減少圖示陸續出現；重新整理時保留目前桌面，載入較慢或失敗時提供穩定佔位。\n- 改善智慧接入卡片切換，保留左右箭頭的懸停展開位置，讓連續點擊與內容過渡更流暢。\n- 統一各工具新增帳號、帳號清單、功能標籤與模型區域的間距，修正 ZCode 等工具的額外留白。\n- 調整 Windows 與 Linux 應用程式圖示的透明留白，改善工作列與應用啟動器中圖示偏小的問題。\n- 修復 Windows 部分分頁的選取顯示與流動動畫，統一分頁切換回饋。\n- 更新下載按鈕改用圓形進度回饋，清楚顯示下載進度。",
+    "ja": "## デスクトップの読み込みと切り替えを改善\n\n- アプリデスクトップを開いた際のアイコンと名前の表示を改善しました。更新中も現在の一覧を保持し、画像の読み込みが遅い場合や失敗した場合には安定した代替表示を行います。\n- Smart Access のカード切り替えを滑らかにし、連続クリック中も左右の矢印のホバー位置を維持します。\n- アカウント追加、アカウント一覧、機能タグ、モデル間の余白を統一し、ZCode などの余分な間隔を修正しました。\n- Windows と Linux のアプリアイコンの透明な余白を調整し、タスクバーやランチャーで小さく見える問題を改善しました。\n- Windows で選択中のタブと流れるアニメーションの表示を修正しました。\n- 更新ボタンのダウンロード進捗を円形で表示します。"
+  }
+}
