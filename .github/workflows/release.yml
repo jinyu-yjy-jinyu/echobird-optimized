@@ -102,7 +102,7 @@ jobs:
             # `gh api -f draft=true` would send the string "true", which the
             # API rejects with 422.
             gh release create "$TAG" --repo "$REPO" --draft \
-              --title "EchoBird ${TAG#v}" \
+              --title "EchoBird ${TAG#v} · 非官方优化版" \
               --notes "All-platform build in progress."
             echo "created draft release $TAG"
           fi
