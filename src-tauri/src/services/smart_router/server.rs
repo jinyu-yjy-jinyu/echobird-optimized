@@ -1249,6 +1249,27 @@ async fn refresh_rejected_account(
 #[derive(Clone, Copy)]
 struct NativeResponses;
 
+/// Newer OpenAI-compatible clients (DSH Desktop, AI SDK v5) send the `developer`
+/// role instead of `system`. Several account channels — WorkBuddy among them —
+/// reject it outright with HTTP 400 `request_incompatible`
+/// ("Illegal API invocation from an unapproved channel"), which reads like an
+/// auth problem but is really an unknown-role rejection, so every candidate
+/// fails and the user sees a dead run.
+///
+/// `developer` is defined as equivalent to `system`, and the Anthropic/Google
+/// converters already treat it that way; normalize before dispatch so
+/// OpenAI-passthrough upstreams see a role they understand.
+fn normalize_developer_role(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) == Some("developer") {
+            message["role"] = json!("system");
+        }
+    }
+}
+
 async fn send_account_request(
     state: &AppState,
     source: &crate::models::model::AccountSource,
@@ -1258,6 +1279,8 @@ async fn send_account_request(
     protocol: RouteProtocol,
     final_candidate: bool,
 ) -> Result<Response, crate::services::account_proxy::ProxyError> {
+    let mut body = body;
+    normalize_developer_role(&mut body);
     if protocol == RouteProtocol::Responses {
         if let Some(mut response) = crate::services::account_proxy::route_responses(
             source.provider,
@@ -1311,6 +1334,7 @@ fn responses_chat_request(
     }
     let mut chat =
         crate::services::account_proxy::responses_to_chat(body).map_err(conversion_error)?;
+    normalize_developer_role(&mut chat);
     // Collect after headers, within the router's existing completion budget.
     chat["stream"] = json!(true);
     Ok(chat)
@@ -1338,6 +1362,7 @@ async fn send_api_request(
     protocol: RouteProtocol,
 ) -> Result<Response, String> {
     let mut body = body.clone();
+    normalize_developer_role(&mut body);
     if protocol == RouteProtocol::Chat {
         crate::services::account_proxy::strip_response_metadata(&mut body);
     } else {

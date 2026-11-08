@@ -646,3 +646,33 @@ async fn legitimate_empty_business_output_preserves_response_without_advancing_s
         state.shutdown.cancel();
     }
 }
+
+/// DSH Desktop (and other AI SDK v5 clients) send `role: "developer"`.
+/// WorkBuddy-style channels reject that role with HTTP 400 `request_incompatible`
+/// ("Illegal API invocation from an unapproved channel"), which used to fail
+/// every candidate and surface as a dead run. The router must hand upstreams a
+/// role they understand.
+#[tokio::test]
+async fn developer_role_is_forwarded_as_system() {
+    let upstream = Upstream::start().await;
+    let state = state();
+    let response = route_chat_with_candidates(
+        &state,
+        &HeaderMap::new(),
+        json!({
+            "messages": [
+                {"role": "developer", "content": "be terse"},
+                {"role": "user", "content": "hi"}
+            ]
+        }),
+        upstream.candidates(&["one"]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+    let calls = upstream.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["messages"][0]["role"], "system");
+    assert_eq!(calls[0].body["messages"][1]["role"], "user");
+    state.shutdown.cancel();
+}
