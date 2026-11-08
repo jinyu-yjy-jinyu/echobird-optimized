@@ -290,6 +290,12 @@ jobs:
           set -euo pipefail
           gh release edit "$TAG" --repo "$REPO" --draft=false --latest \
             --notes "$(cat <<'NOTES'
+          > [!IMPORTANT]
+          > **非官方优化版，不是原项目。Unofficial optimized build — not the official project.**
+          > 本仓库仅在 [EchoBird](https://github.com/edison7009/EchoBird) 原版基础上做安全 / 稳定性 / 性能修复后重新构建，
+          > 不新增功能、不代表原作者观点、未获背书。
+          > **官方原版（唯一官方来源）→ https://github.com/edison7009/EchoBird**
+
           All-platform build from this repository, produced by GitHub Actions.
 
           | Platform | Architecture | Installer |

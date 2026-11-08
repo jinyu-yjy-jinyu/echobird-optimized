@@ -2,29 +2,42 @@
   <img src="docs/icon.png" alt="EchoBird" width="140" />
 </p>
 
-<h1 align="center">EchoBird</h1>
+<h1 align="center">EchoBird <sub>· 非官方优化版 Unofficial Optimized Build</sub></h1>
+
+> [!IMPORTANT]
+> **这是非官方优化版，不是原项目。This is an unofficial optimized build — not the official project.**
+>
+> 本仓库只做一件事：在 [EchoBird](https://github.com/edison7009/EchoBird) 原版基础上做
+> **安全性 / 稳定性 / 性能优化**后重新构建。**不新增功能、不改产品定位、不代表原作者观点，
+> 也未获得原作者背书。**
+>
+> **官方原版（唯一官方来源）→ <https://github.com/edison7009/EchoBird>**
+> 官方网站 → <https://echobird.ai>
+>
+> 请优先从官方渠道下载与更新。本仓库的安装包是**未签名**构建，仅供自用与测试。
 
 <p align="center">All-in-one AI desktop app: one-click install for Claude Code, Codex CLI, DeepSeek and more, manage AI accounts and quotas, smart model routing with auto-failover, voice input, and run local LLMs. Bonus: a Token Pet that grows as you use AI.</p>
 
 <p align="center">
-  <a href="https://github.com/edison7009/EchoBird/releases">
-    <img src="https://img.shields.io/github/v/release/edison7009/EchoBird?style=flat-square&color=D97757" alt="Release" />
+  <a href="https://github.com/jinyu-yjy-jinyu/echobird-optimized/releases">
+    <img src="https://img.shields.io/github/v/release/jinyu-yjy-jinyu/echobird-optimized?style=flat-square&color=D97757&label=optimized%20build" alt="Optimized build" />
   </a>
+  <img src="https://img.shields.io/badge/upstream-edison7009%2FEchoBird-blue?style=flat-square" alt="Upstream" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square" alt="Platform" />
   <img src="https://img.shields.io/badge/built%20with-Tauri%20%2B%20Rust-orange?style=flat-square" alt="Tauri + Rust" />
   <img src="https://img.shields.io/github/license/edison7009/EchoBird?style=flat-square" alt="MIT License" />
 </p>
 
 <p align="center">
-  <a href="https://echobird.ai">Website</a> ·
-  <a href="https://github.com/edison7009/EchoBird/releases/latest">Download</a> ·
-  <a href="https://echobird.ai/support/">☕ Buy a coffee</a> ·
+  <a href="https://github.com/edison7009/EchoBird">官方原版 Official project</a> ·
+  <a href="https://echobird.ai">官网 Website</a> ·
+  <a href="https://github.com/jinyu-yjy-jinyu/echobird-optimized/releases">优化版构建 Optimized builds</a> ·
   <a href="README.zh-CN.md">中文 README</a>
 </p>
 
-> **Note** — This repository is just one of several download channels
-> and an issue tracker. For product information, announcements, and
-> commercial inquiries, visit [echobird.ai](https://echobird.ai).
+> **说明** —— 本仓库是第三方**优化版**，只承载经安全与性能修复后重新构建的安装包。
+> 功能说明、路线图、公告与商业咨询请一律以[官方仓库](https://github.com/edison7009/EchoBird)
+> 和 [echobird.ai](https://echobird.ai) 为准。
 
 ---
 
@@ -212,7 +225,13 @@ The script auto-detects your OS, downloads the right package, and skips if you'r
 
 ### Or download a package
 
-Latest release → <https://github.com/edison7009/EchoBird/releases/latest>
+**官方原版 Official build → <https://github.com/edison7009/EchoBird/releases/latest>**
+
+**本仓库优化版 This fork's optimized build → <https://github.com/jinyu-yjy-jinyu/echobird-optimized/releases/latest>**
+
+> 优化版安装包**未签名**：Windows 会提示"未知发布者"（更多信息 → 仍要运行）；
+> macOS 首次启动被 Gatekeeper 拦截，需执行一次
+> `xattr -dr com.apple.quarantine /Applications/EchoBird.app`。
 
 | Platform                    | Asset                                  |
 | --------------------------- | -------------------------------------- |
@@ -252,6 +271,6 @@ for the full policy.
 ---
 
 <p align="center">
-  Made with 💚 by EchoBird Team<br>
-  <sub>⭐ <a href="https://github.com/edison7009/EchoBird">Star on GitHub</a> · <a href="README.zh-CN.md">中文文档</a></sub>
+  Original project made with 💚 by EchoBird Team<br>
+  <sub>This optimized build is unofficial and not endorsed by them · ⭐ <a href="https://github.com/edison7009/EchoBird">官方原版 Official repo</a> · <a href="README.zh-CN.md">中文文档</a></sub>
 </p>

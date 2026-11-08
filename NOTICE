@@ -1,3 +1,19 @@
+THIS REPOSITORY IS AN UNOFFICIAL, INDEPENDENTLY MODIFIED BUILD
+=============================================================
+
+It is not affiliated with, sponsored by, or endorsed by the EchoBird
+project or its authors, and it is not the official source of the product.
+
+  Official project / 官方原版: https://github.com/edison7009/EchoBird
+  Official website / 官网:     https://echobird.ai
+
+Modifications in this repository are limited to security, stability and
+performance fixes; no product features were added and the branding is
+unchanged. Every change is visible in the git history. Builds published
+here are unsigned and provided as-is, for personal use and testing.
+
+--------------------------------------------------------------------------
+
 EchoBird
 Copyright (c) 2026 edison7009 and EchoBird contributors
 
