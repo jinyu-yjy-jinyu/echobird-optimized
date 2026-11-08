@@ -86,23 +86,24 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          STATE=$(gh release view "$TAG" --repo "$REPO" --json isDraft -q .isDraft 2>/dev/null || echo missing)
-          if [ "$STATE" = false ]; then
+          # `gh release view` fails for a tag with no release yet, so only treat
+          # a successful lookup as authoritative.
+          if gh release view "$TAG" --repo "$REPO" --json isDraft -q .isDraft 2>/dev/null | grep -qx false; then
             echo "::error::$TAG is already published; bump the version instead of overwriting it"; exit 1
           fi
-          ID=$(gh api --paginate "repos/${REPO}/releases" \
-            --jq "[.[] | select(.tag_name == \"${TAG}\" and .draft == true)][0].id // empty")
-          if [ -z "$ID" ]; then
-            ID=$(gh api -X POST "repos/${REPO}/releases" \
-              -f tag_name="${TAG}" \
-              -f name="EchoBird ${TAG#v}" \
-              -f draft=true -F prerelease=false \
-              -f body="All-platform build in progress." --jq '.id')
-            echo "created draft release $ID"
+          if gh release view "$TAG" --repo "$REPO" --json isDraft >/dev/null 2>&1; then
+            echo "reusing existing draft release $TAG"
           else
-            echo "reusing existing draft release $ID"
+            # Let gh build the request: the REST `draft` field is a boolean and
+            # `gh api -f draft=true` would send the string "true", which the
+            # API rejects with 422.
+            gh release create "$TAG" --repo "$REPO" --draft \
+              --title "EchoBird ${TAG#v}" \
+              --notes "All-platform build in progress."
+            echo "created draft release $TAG"
           fi
-          echo "release_id=$ID" >> "$GITHUB_OUTPUT"
+          gh release view "$TAG" --repo "$REPO" --json databaseId -q .databaseId > /tmp/release_id
+          echo "release_id=$(cat /tmp/release_id)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [preflight, create-release]
