@@ -2066,6 +2066,23 @@ fn session_cache() -> &'static Mutex<HashMap<PathBuf, CachedSession>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Cap on cached sessions. The whole map is also persisted as one JSON blob, so
+/// unbounded growth costs memory *and* rewrites every entry on each flush.
+/// Other caches in this tree (`smart_router::statistics`, `agent_memory`,
+/// `response_bindings`) already cap themselves; this one didn't.
+const MAX_CACHED_SESSIONS: usize = 512;
+
+/// Drop the least recently modified session to keep the cache bounded.
+fn evict_oldest_session(cache: &mut HashMap<PathBuf, CachedSession>) {
+    if let Some(oldest) = cache
+        .iter()
+        .min_by_key(|(_, entry)| entry.stamp.mtime)
+        .map(|(path, _)| path.clone())
+    {
+        cache.remove(&oldest);
+    }
+}
+
 #[cfg(test)]
 fn parse_session_cached(path: &Path, family: Family) -> Option<SavedSession> {
     parse_session_cached_in(session_cache(), path, family)
@@ -2119,6 +2136,9 @@ fn parse_session_pages_cached_in(
     };
     let session = result?;
     if after == pages {
+        if guard.len() >= MAX_CACHED_SESSIONS && !guard.contains_key(path) {
+            evict_oldest_session(&mut guard);
+        }
         guard.insert(
             path.to_path_buf(),
             CachedSession {

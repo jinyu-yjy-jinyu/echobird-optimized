@@ -1674,15 +1674,33 @@ async fn exec_web_fetch(url: &str) -> ToolResult {
         };
     }
 
-    let body = match response.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            return ToolResult {
-                success: false,
-                output: format!("Failed to read response: {}", e),
+    // `text()` buffers the whole response, so a hostile/huge page is an OOM.
+    // Cap the read; losing the tail only costs the model a note.
+    const WEB_FETCH_MAX_BYTES: usize = 4 * 1024 * 1024;
+    let mut response = response;
+    let mut raw_body: Vec<u8> = Vec::new();
+    let mut body_cut = false;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = WEB_FETCH_MAX_BYTES.saturating_sub(raw_body.len());
+                if chunk.len() > room {
+                    raw_body.extend_from_slice(&chunk[..room]);
+                    body_cut = true;
+                    break;
+                }
+                raw_body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return ToolResult {
+                    success: false,
+                    output: format!("Failed to read response: {}", e),
+                }
             }
         }
-    };
+    }
+    let body = String::from_utf8_lossy(&raw_body).into_owned();
 
     // Strip HTML tags (rough but effective for most pages)
     let text = strip_html_tags(&body);
@@ -1690,12 +1708,19 @@ async fn exec_web_fetch(url: &str) -> ToolResult {
     // Collapse whitespace
     let text: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
 
-    // Truncate to max chars
-    let truncated = if text.len() > WEB_FETCH_MAX_CHARS {
+    // WEB_FETCH_MAX_CHARS is a *byte* budget and `text` is UTF-8: slicing at a
+    // raw offset panics ("byte index 8000 is not a char boundary") on any page
+    // with CJK/emoji near the limit. Back off to the nearest boundary first.
+    let mut cut = WEB_FETCH_MAX_CHARS.min(text.len());
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let truncated = if cut < text.len() {
         format!(
-            "{}...\n[Truncated: {} chars total]",
-            &text[..WEB_FETCH_MAX_CHARS],
-            text.len()
+            "{}...\n[Truncated: {} bytes total{}]",
+            &text[..cut],
+            text.len(),
+            if body_cut { ", response cut at 4 MiB" } else { "" }
         )
     } else {
         text
@@ -1750,6 +1775,38 @@ fn strip_html_tags(html: &str) -> String {
 
 // ── Upload File (local → remote via SSH base64) ──
 
+/// Single-quote a value for POSIX `sh` so it stays one literal word.
+/// `'\''` = "close quote, escaped quote, reopen quote".
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Append one batch of base64 text to the remote `.b64` staging file.
+/// `append == false` truncates first (it is the first batch of the upload).
+async fn push_base64_batch(
+    encoded: &[String],
+    quoted_b64_path: &str,
+    append: bool,
+    server_id: &str,
+    ssh_pool: &SSHPool,
+) -> Result<(), ToolResult> {
+    let mut script = String::with_capacity(encoded.len() * 70_000);
+    for (index, chunk) in encoded.iter().enumerate() {
+        // base64's alphabet never contains a single quote, so this is literal.
+        let redirect = if append || index > 0 { ">>" } else { ">" };
+        script.push_str(&format!("printf '%s' '{chunk}' {redirect} {quoted_b64_path}\n"));
+    }
+    let result = exec_ssh_shell(&script, server_id, ssh_pool).await;
+    if result.success {
+        Ok(())
+    } else {
+        Err(ToolResult {
+            success: false,
+            output: format!("Upload failed: {}", result.output),
+        })
+    }
+}
+
 async fn exec_upload_file(
     local_path: &str,
     remote_path: &str,
@@ -1763,33 +1820,29 @@ async fn exec_upload_file(
         remote_path
     );
 
-    // Read local file
-    let file_data = match std::fs::read(local_path) {
-        Ok(data) => data,
-        Err(e) => {
-            return ToolResult {
-                success: false,
-                output: format!("Failed to read local file '{}': {}", local_path, e),
-            }
-        }
-    };
+    // A 100 MiB upload used to mean: read the whole file into RAM, base64 the
+    // whole thing, then one SSH round trip per 64 KiB chunk (~2000 round trips).
+    // Stream it in 48 KiB reads (a multiple of 3, so concatenated chunk
+    // encodings still decode as a single stream) and batch per round trip.
+    const RAW_CHUNK_BYTES: usize = 48 * 1024;
+    const CHUNKS_PER_CALL: usize = 4;
 
-    let file_size = file_data.len();
-    log::info!("[AgentTools] File size: {} bytes", file_size);
-
-    // Base64 encode
-    let encoded = {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(&file_data)
-    };
+    // Remote paths are spliced into a shell command line: unquoted, a space
+    // breaks `mkdir -p` and `$(...)` executes on the server.
+    let quoted_remote = sh_quote(remote_path);
+    let quoted_b64 = sh_quote(&format!("{remote_path}.b64"));
 
     // Ensure remote directory exists
     let remote_dir = std::path::Path::new(remote_path)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
-    let mkdir_result =
-        exec_ssh_shell(&format!("mkdir -p {}", remote_dir), server_id, ssh_pool).await;
+    let mkdir_result = exec_ssh_shell(
+        &format!("mkdir -p {}", sh_quote(&remote_dir)),
+        server_id,
+        ssh_pool,
+    )
+    .await;
     if !mkdir_result.success {
         return ToolResult {
             success: false,
@@ -1800,18 +1853,60 @@ async fn exec_upload_file(
         };
     }
 
-    // Transfer via base64 in chunks (SSH channel has size limits)
-    let chunk_size = 65536; // 64KB base64 chunks
-    let chunks: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(chunk_size)
-        .map(|c| std::str::from_utf8(c).unwrap_or(""))
-        .collect();
+    let mut file = match tokio::fs::File::open(local_path).await {
+        Ok(file) => file,
+        Err(e) => {
+            return ToolResult {
+                success: false,
+                output: format!("Failed to read local file '{}': {}", local_path, e),
+            }
+        }
+    };
 
-    if chunks.len() == 1 {
-        // Small file — single command
-        let cmd = format!("echo '{}' | base64 -d > {}", encoded, remote_path);
-        let result = exec_ssh_shell(&cmd, server_id, ssh_pool).await;
+    let mut buffer = vec![0u8; RAW_CHUNK_BYTES];
+    let mut pending: Vec<String> = Vec::with_capacity(CHUNKS_PER_CALL);
+    let mut appended = false;
+    let mut uploaded = 0usize;
+    let mut chunk_count = 0usize;
+
+    loop {
+        let read = match tokio::io::AsyncReadExt::read(&mut file, &mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(e) => {
+                return ToolResult {
+                    success: false,
+                    output: format!("Failed to read local file '{}': {}", local_path, e),
+                }
+            }
+        };
+        pending.push({
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&buffer[..read])
+        });
+        uploaded += read;
+        chunk_count += 1;
+        if pending.len() >= CHUNKS_PER_CALL {
+            if let Err(result) =
+                push_base64_batch(&pending, &quoted_b64, appended, server_id, ssh_pool).await
+            {
+                return result;
+            }
+            appended = true;
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
+        if let Err(result) =
+            push_base64_batch(&pending, &quoted_b64, appended, server_id, ssh_pool).await
+        {
+            return result;
+        }
+    }
+
+    if chunk_count == 0 {
+        // Empty local file: nothing to decode, just create the target.
+        let result = exec_ssh_shell(&format!(": > {}", quoted_remote), server_id, ssh_pool).await;
         if !result.success {
             return ToolResult {
                 success: false,
@@ -1819,34 +1914,14 @@ async fn exec_upload_file(
             };
         }
     } else {
-        // Large file — accumulate base64 text in chunks, then decode once
-        let first_cmd = format!("printf '%s' '{}' > {}.b64", chunks[0], remote_path);
-        let first_result = exec_ssh_shell(&first_cmd, server_id, ssh_pool).await;
-        if !first_result.success {
-            return ToolResult {
-                success: false,
-                output: format!("Upload chunk 0 failed: {}", first_result.output),
-            };
-        }
-
-        for (i, chunk) in chunks[1..].iter().enumerate() {
-            let cmd = format!("printf '%s' '{}' >> {}.b64", chunk, remote_path);
-            let chunk_result = exec_ssh_shell(&cmd, server_id, ssh_pool).await;
-            if !chunk_result.success {
-                return ToolResult {
-                    success: false,
-                    output: format!("Upload chunk {} failed: {}", i + 1, chunk_result.output),
-                };
-            }
-        }
-
         // Decode the concatenated base64 in one shot
         let decode_cmd = format!(
-            "base64 -d {}.b64 > {} && rm {}.b64",
-            remote_path, remote_path, remote_path
+            "base64 -d {} > {} && rm -f {}",
+            quoted_b64, quoted_remote, quoted_b64
         );
         let decode_result = exec_ssh_shell(&decode_cmd, server_id, ssh_pool).await;
         if !decode_result.success {
+            let _ = exec_ssh_shell(&format!("rm -f {}", quoted_b64), server_id, ssh_pool).await;
             return ToolResult {
                 success: false,
                 output: format!("Upload decode failed: {}", decode_result.output),
@@ -1855,20 +1930,16 @@ async fn exec_upload_file(
     }
 
     // Make executable (useful for binaries)
-    let _ = exec_ssh_shell(&format!("chmod +x {}", remote_path), server_id, ssh_pool).await;
+    let _ = exec_ssh_shell(&format!("chmod +x {}", quoted_remote), server_id, ssh_pool).await;
 
     // Verify
-    let verify = exec_ssh_shell(&format!("ls -la {}", remote_path), server_id, ssh_pool).await;
+    let verify = exec_ssh_shell(&format!("ls -la {}", quoted_remote), server_id, ssh_pool).await;
 
     ToolResult {
         success: true,
         output: format!(
-            "Uploaded {} bytes ({} chunks) to {}:{}\n{}",
-            file_size,
-            chunks.len(),
-            server_id,
-            remote_path,
-            verify.output
+            "Uploaded {} bytes in {} base64 chunk(s) to {}:{}\n{}",
+            uploaded, chunk_count, server_id, remote_path, verify.output
         ),
     }
 }
@@ -1888,11 +1959,14 @@ async fn exec_download_file(
         local_path
     );
 
+    // Quote once: this path is spliced into three separate shell commands.
+    let quoted_remote = sh_quote(remote_path);
+
     // Check remote file exists and get size
     let check = exec_ssh_shell(
         &format!(
-            "test -f {} && stat -c %s {} 2>/dev/null || stat -f %z {} 2>/dev/null",
-            remote_path, remote_path, remote_path
+            "test -f {q} && stat -c %s {q} 2>/dev/null || stat -f %z {q} 2>/dev/null",
+            q = quoted_remote
         ),
         server_id,
         ssh_pool,
@@ -1908,8 +1982,8 @@ async fn exec_download_file(
     // Read remote file as base64
     let b64_result = exec_ssh_shell(
         &format!(
-            "base64 {} 2>/dev/null || openssl base64 -in {} 2>/dev/null",
-            remote_path, remote_path
+            "base64 {q} 2>/dev/null || openssl base64 -in {q} 2>/dev/null",
+            q = quoted_remote
         ),
         server_id,
         ssh_pool,

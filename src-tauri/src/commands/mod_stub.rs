@@ -52,6 +52,12 @@ pub async fn read_log_tail(app: tauri::AppHandle, lines: usize) -> Result<String
     use std::time::SystemTime;
     use tauri::Manager;
 
+    // `lines` comes straight from the webview and sizes a `Vec::with_capacity`
+    // below; an absurd value is a capacity-overflow panic or a multi-GB
+    // allocation. The UI only ever asks for a few hundred.
+    const MAX_LOG_TAIL_LINES: usize = 10_000;
+    let lines = lines.min(MAX_LOG_TAIL_LINES);
+
     let log_dir = app
         .path()
         .app_log_dir()

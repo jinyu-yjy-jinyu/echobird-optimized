@@ -226,9 +226,12 @@ pub(crate) fn session_file(server_key: &str) -> std::path::PathBuf {
         .join("config/agent_sessions")
         .join(format!("{}.json", safe_key))
 }
-fn save_checkpoint(server_key: &str, session: &AgentSession) -> Result<(), String> {
+/// Persist a checkpoint. Callers snapshot under the session lock and call this
+/// *after* releasing it: `save` does a full read plus two fsync'd writes, so
+/// holding the session map across it serialized every other session in the app.
+fn save_checkpoint(server_key: &str, snapshot: &HistorySnapshot) -> Result<(), String> {
     HistoryStore::standard()
-        .save(server_key, &session.snapshot())
+        .save(server_key, snapshot)
         .inspect_err(|error| {
             log::error!("[AgentSession] Failed to save checkpoint: {error}");
         })
@@ -313,7 +316,7 @@ pub async fn run_agent(
     };
 
     // 3. Add user message to per-server session history
-    let (cancel_token, turn_start) = {
+    let (cancel_token, turn_start, user_checkpoint) = {
         let mut map = session_map.lock().await;
         if !map.contains_key(&server_key) {
             map.insert(server_key.clone(), AgentSession::restore(&server_key)?);
@@ -324,9 +327,10 @@ pub async fn run_agent(
             role: "user".into(),
             content: MessageContent::Text(request.message.clone()),
         });
-        let _ = save_checkpoint(&server_key, sess);
-        (sess.cancel_token.clone(), turn_start)
+        let checkpoint = sess.snapshot();
+        (sess.cancel_token.clone(), turn_start, checkpoint)
     };
+    let _ = save_checkpoint(&server_key, &user_checkpoint);
 
     // Per-turn datalog — markdown trace under ~/.echobird/datalog/<server>/.
     // Default-on; flip the constructor arg to gate via a settings flag later.
@@ -396,12 +400,17 @@ pub async fn run_agent(
                 match summarize_history(&summary_client, through, &transcript, &cancel_token).await
                 {
                     Ok(summary) => {
-                        let mut map = session_map.lock().await;
-                        if let Some(session) = map.get_mut(&server_key) {
-                            session.summary = Some(summary.clone());
-                            let _ = save_checkpoint(&server_key, session);
-                            snapshot.summary = Some(summary);
+                        let checkpoint = {
+                            let mut map = session_map.lock().await;
+                            map.get_mut(&server_key).map(|session| {
+                                session.summary = Some(summary.clone());
+                                session.snapshot()
+                            })
+                        };
+                        if let Some(checkpoint) = &checkpoint {
+                            let _ = save_checkpoint(&server_key, checkpoint);
                         }
+                        snapshot.summary = Some(summary);
                     }
                     Err(error) => {
                         log::warn!("[AgentMemory] Handoff unavailable; retaining history: {error}")
@@ -729,7 +738,7 @@ pub async fn run_agent(
         sse_retry_count = 0;
 
         // 5. Store assistant response in history
-        {
+        let assistant_checkpoint = {
             let mut map = session_map.lock().await;
             let sess = map
                 .entry(server_key.clone())
@@ -740,8 +749,9 @@ pub async fn run_agent(
                 &tool_calls,
                 Some(&thinking_origin),
             ));
-            let _ = save_checkpoint(&server_key, sess);
-        }
+            sess.snapshot()
+        };
+        let _ = save_checkpoint(&server_key, &assistant_checkpoint);
 
         // 6. If no tool calls, we're done
         if tool_calls.is_empty() {
@@ -903,26 +913,29 @@ pub async fn run_agent(
                         success: result.success,
                     },
                 );
-                let mut map = session_map.lock().await;
-                let sess = map
-                    .entry(server_key.clone())
-                    .or_insert_with(AgentSession::new);
-                let block = ContentBlock::ToolResult {
-                    tool_use_id: tc.id.clone(),
-                    content: result.output,
+                let checkpoint = {
+                    let mut map = session_map.lock().await;
+                    let sess = map
+                        .entry(server_key.clone())
+                        .or_insert_with(AgentSession::new);
+                    let block = ContentBlock::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: result.output,
+                    };
+                    match active_provider {
+                        LlmProvider::OpenAI => sess.messages.push(Message {
+                            role: "tool".into(),
+                            content: MessageContent::Blocks(vec![block]),
+                        }),
+                        LlmProvider::Anthropic => sess.messages.push(Message {
+                            role: "user".into(),
+                            content: MessageContent::Blocks(vec![block]),
+                        }),
+                    }
+                    sess.snapshot()
                 };
-                match active_provider {
-                    LlmProvider::OpenAI => sess.messages.push(Message {
-                        role: "tool".into(),
-                        content: MessageContent::Blocks(vec![block]),
-                    }),
-                    LlmProvider::Anthropic => sess.messages.push(Message {
-                        role: "user".into(),
-                        content: MessageContent::Blocks(vec![block]),
-                    }),
-                }
                 completed_count += 1;
-                let _ = save_checkpoint(&server_key, sess);
+                let _ = save_checkpoint(&server_key, &checkpoint);
             }
         } else {
             for tc in &tool_calls {
@@ -1005,7 +1018,7 @@ pub async fn run_agent(
 
                 // Always save tool result to message history — even for cancelled tools.
                 // This keeps the conversation structure valid (every tool_call must have a tool_result).
-                {
+                let checkpoint = {
                     let mut map = session_map.lock().await;
                     let sess = map
                         .entry(server_key.clone())
@@ -1030,8 +1043,9 @@ pub async fn run_agent(
                             });
                         }
                     }
-                    let _ = save_checkpoint(&server_key, sess);
-                }
+                    sess.snapshot()
+                };
+                let _ = save_checkpoint(&server_key, &checkpoint);
                 completed_count += 1;
 
                 if was_cancelled {
@@ -1084,7 +1098,7 @@ pub async fn run_agent(
     }
 
     // 8. Done — save session to disk
-    let (save_error, capture_messages) = {
+    let (final_checkpoint, capture_messages) = {
         let mut map = session_map.lock().await;
         if let Some(sess) = map.get_mut(&server_key) {
             let captured = if completed_turn && !cancel_token.is_cancelled() {
@@ -1093,11 +1107,14 @@ pub async fn run_agent(
                 Vec::new()
             };
             sess.running = false;
-            (save_checkpoint(&server_key, sess).err(), captured)
+            (Some(sess.snapshot()), captured)
         } else {
             (None, Vec::new())
         }
     };
+    let save_error = final_checkpoint
+        .as_ref()
+        .and_then(|checkpoint| save_checkpoint(&server_key, checkpoint).err());
     if let Some(error) = save_error {
         emit_event(
             &app,

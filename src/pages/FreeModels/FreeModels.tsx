@@ -1179,6 +1179,7 @@ function FreeModelsContent({
       ? savedActivity
       : { candidateId: null, active: false, sequence: 0, updatedAtMs: 0 };
   const [activityObservedAtMs, setActivityObservedAtMs] = useState(0);
+  const activityPayloadRef = useRef('');
   const showRouteActivity = layout !== 'terminal';
 
   useEffect(() => {
@@ -1194,8 +1195,16 @@ function FreeModelsContent({
           ...(activeRouterId === 'smart-router' ? [] : [activeRouterId])
         );
         if (!cancelled) {
-          setRouterActivity({ ...activity, routerId: activeRouterId });
-          setActivityObservedAtMs(Date.now());
+          const next = { ...activity, routerId: activeRouterId };
+          const encoded = JSON.stringify(next);
+          // Identical payload → don't touch state at all. Writing a fresh object
+          // plus a fresh timestamp re-rendered this 2000-line page (dnd-kit tree
+          // included) ~1.3x/second for no visual change.
+          if (encoded !== activityPayloadRef.current) {
+            activityPayloadRef.current = encoded;
+            setRouterActivity(next);
+            setActivityObservedAtMs(Date.now());
+          }
         }
       } catch (error) {
         if (!cancelled && !errorReported) {

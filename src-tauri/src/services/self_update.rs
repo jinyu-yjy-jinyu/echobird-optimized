@@ -87,10 +87,18 @@ fn verify(
     if size == 0 || total.is_some_and(|n| n != size) {
         return Err("Incomplete download".into());
     }
-    if let Some(file) = expected {
-        if size != file.size || !digest.eq_ignore_ascii_case(&file.sha256) {
-            return Err("Download checksum or size mismatch".into());
-        }
+    // A download with no expectation means every mirror manifest failed (or
+    // the version didn't match) and we fell back to the website URL, which
+    // carries no digest. The next step spawns this file, so an unverified
+    // installer must never get that far — TLS alone doesn't stop a corporate
+    // TLS proxy or a hostile certificate from serving any binary.
+    let Some(file) = expected else {
+        return Err(
+            "No verified checksum is available for this download; refusing to install".into(),
+        );
+    };
+    if size != file.size || !digest.eq_ignore_ascii_case(&file.sha256) {
+        return Err("Download checksum or size mismatch".into());
     }
     Ok(())
 }
@@ -404,6 +412,8 @@ mod tests {
         assert!(verify(Some(&expected), Some(9), 9, &digest).is_ok());
         assert!(verify(Some(&expected), None, 8, &digest).is_err());
         assert!(verify(Some(&expected), None, 9, "wrong").is_err());
+        // Website fallback (no manifest digest) must refuse to install.
+        assert!(verify(None, Some(9), 9, &digest).is_err());
         assert!(verify(None, Some(10), 9, &digest).is_err());
         assert!(verify(None, None, 0, &digest).is_err());
     }

@@ -38,7 +38,11 @@ pub(super) fn apply_aider(model_info: &ModelInfo) -> ApplyResult {
     }
 
     ensure_parent(&config_path);
-    match fs::write(&config_path, &content) {
+    // Atomic + 0600: this file stores the provider API key in plaintext.
+    match crate::services::native_account_files::write_private_file(
+        &config_path,
+        content.as_bytes(),
+    ) {
         Ok(_) => ApplyResult {
             success: true,
             message: format!("Model \"{}\" applied to Aider ({}).", model, protocol),

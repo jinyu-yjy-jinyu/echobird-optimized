@@ -28,6 +28,17 @@ interface ConversationState<T> {
 
 export const CONVERSATIONS_STORAGE_KEY = 'echobird:agent:conversations';
 export const conversationBodyKey = (id: string) => `echobird:agent:conversation:${id}`;
+
+/**
+ * Hard cap on messages kept per conversation.
+ *
+ * The in-memory list used to grow without bound, and every save rewrites the
+ * whole body into localStorage: long agent runs (each tool call is a message)
+ * eventually blew the ~5 MB quota, after which every save failed silently and
+ * the transcript appeared to vanish. Cap it well above what the UI ever shows,
+ * so normal use loses nothing while runaway growth stays bounded.
+ */
+const MAX_PERSISTED_MESSAGES = 1000;
 const LEGACY_PREFIX = 'echobird:chat:agent_';
 
 function newConversation<T>(serverId: string): ChatConversation<T> {
@@ -262,8 +273,10 @@ export function useChatPersistence<T>({
     try {
       writeStored(stateRef.current);
       dirtyRef.current = false;
-    } catch {
-      // Preserve cached rows and retry on the next change; no blocking dialog.
+    } catch (error) {
+      // Never swallow this silently: it is what "my chat history disappeared"
+      // looked like last time (quota exhausted → save fails → reload is empty).
+      console.warn('[chat] failed to persist conversation state', error);
     }
   }, [writeStored]);
 
@@ -296,13 +309,17 @@ export function useChatPersistence<T>({
       const active = prev.conversations.find((c) => c.id === prev.activeConversationId)!;
       const messages = typeof value === 'function' ? value(active.messages) : value;
       if (messages === active.messages) return;
-      const messageCount = messages.reduce((total, message) => {
+      const capped =
+        messages.length > MAX_PERSISTED_MESSAGES
+          ? messages.slice(messages.length - MAX_PERSISTED_MESSAGES)
+          : messages;
+      const messageCount = capped.reduce((total, message) => {
         if (countMessage) return total + Number(countMessage(message));
         const disk = toDisk(message);
         return total + Number(!!disk && disk.role !== 'system' && disk.role !== 'tool');
       }, 0);
       let title = '';
-      for (const message of messages) {
+      for (const message of capped) {
         const diskMessage = toDisk(message);
         if (diskMessage?.role !== 'user') continue;
         title = diskMessage.content.trim().split('\n')[0].slice(0, 32);
@@ -312,7 +329,7 @@ export function useChatPersistence<T>({
       update({
         ...prev,
         conversations: prev.conversations.map((c) =>
-          c.id === active.id ? { ...c, messages, messageCount, title, updatedAt: Date.now() } : c
+          c.id === active.id ? { ...c, messages: capped, messageCount, title, updatedAt: Date.now() } : c
         ),
       });
     },

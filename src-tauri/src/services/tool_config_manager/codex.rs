@@ -416,7 +416,10 @@ pub(crate) fn apply_codex_at(
     // Only write if content actually changed — avoids touching mtime
     // for no-op applies and avoids unnecessary fs traffic.
     if new_content != existing {
-        if let Err(e) = fs::write(&config_path, &new_content) {
+        if let Err(e) = crate::services::native_account_files::write_private_file(
+            &config_path,
+            new_content.as_bytes(),
+        ) {
             return ApplyResult {
                 success: false,
                 message: format!("Codex config error: {}", e),
@@ -427,9 +430,11 @@ pub(crate) fn apply_codex_at(
     // Write the api-key auth.json that Codex v0.130+ expects.
     let auth_payload = serde_json::json!({ "OPENAI_API_KEY": api_key });
     ensure_parent(&auth_path);
-    if let Err(e) = fs::write(
+    if let Err(e) = crate::services::native_account_files::write_private_file(
         &auth_path,
-        serde_json::to_string_pretty(&auth_payload).unwrap_or_default(),
+        serde_json::to_string_pretty(&auth_payload)
+            .unwrap_or_default()
+            .as_bytes(),
     ) {
         return ApplyResult {
             success: false,
@@ -605,12 +610,13 @@ fn restore_codex_config_at(config_path: &Path) -> Result<bool, String> {
 
     let next = official_codex_config_from(&existing)?;
     ensure_parent(config_path);
-    fs::write(config_path, next).map_err(|error| {
-        format!(
-            "Failed to write Codex config {}: {error}",
-            config_path.display()
-        )
-    })?;
+    crate::services::native_account_files::write_private_file(config_path, next.as_bytes())
+        .map_err(|error| {
+            format!(
+                "Failed to write Codex config {}: {error}",
+                config_path.display()
+            )
+        })?;
     Ok(true)
 }
 

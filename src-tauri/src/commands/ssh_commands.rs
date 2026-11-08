@@ -39,6 +39,56 @@ fn ssh_config_path() -> std::path::PathBuf {
         .join("ssh_servers.json")
 }
 
+/// Path to the user's OpenSSH `known_hosts` file.
+fn known_hosts_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".ssh").join("known_hosts"))
+}
+
+/// Does `known_hosts` already pin a key for this host:port?
+fn known_hosts_has_entry(path: &std::path::Path, host: &str, port: u16) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    // OpenSSH writes the plain host for port 22 and `[host]:port` otherwise.
+    let expected = if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    };
+    contents.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        let Some(hosts) = line.split_whitespace().next() else {
+            return false;
+        };
+        // Hashed entries (`|1|...`) can't be matched against a plain name.
+        hosts
+            .split(',')
+            .any(|entry| entry.eq_ignore_ascii_case(&expected))
+    })
+}
+
+/// Choose how to verify the server's host key.
+///
+/// `NoCheck` hands the password to whoever answers on that address, so a
+/// hijacked DNS record or hostile hotspot harvests it. Verify against
+/// `known_hosts` whenever the host is already pinned there — that covers the
+/// repeat-connection case, which is where a stolen password does real damage.
+/// Hosts with no entry still connect (full trust-on-first-use onboarding isn't
+/// available through this crate, which never hands back the server key to
+/// record), but the fallback is logged instead of silent.
+fn server_check(host: &str, port: u16) -> ServerCheckMethod {
+    if let Some(path) = known_hosts_path() {
+        if known_hosts_has_entry(&path, host, port) {
+            return ServerCheckMethod::KnownHostsFile(path.to_string_lossy().into_owned());
+        }
+    }
+    log::warn!("[SSH] No known_hosts entry for {host}:{port}; host key is not verified");
+    ServerCheckMethod::NoCheck
+}
+
 mod storage;
 
 pub fn read_servers_from_disk() -> Result<Vec<SSHServer>, String> {
@@ -126,7 +176,7 @@ pub async fn auto_connect_ssh(pool: &SSHPool, server_id: &str) -> Result<(), Str
 
     let plain_password = model_manager::decrypt_key_for_use(&server.password);
     let auth = AuthMethod::with_password(&plain_password);
-    let check = ServerCheckMethod::NoCheck;
+    let check = server_check(&server.host, server.port);
 
     log::info!(
         "[SSH] Auto-connecting to {}@{}:{}",
@@ -174,7 +224,7 @@ pub async fn ssh_test_connection(
     };
 
     let auth = AuthMethod::with_password(&actual_password);
-    let check = ServerCheckMethod::NoCheck;
+    let check = server_check(&host, port);
 
     let start = std::time::Instant::now();
 

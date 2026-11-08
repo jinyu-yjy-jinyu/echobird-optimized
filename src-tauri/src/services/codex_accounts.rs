@@ -2,9 +2,10 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -25,7 +26,31 @@ const OAUTH_SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const OAUTH_TIMEOUT_SECONDS: u64 = 60;
 static PENDING_LOGIN: Mutex<Option<(String, CancellationToken)>> = Mutex::new(None);
-static TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// One rotation lock per account.
+///
+/// Rotation has to be serialized *per account*: OAuth refresh tokens are
+/// single-use, so two concurrent refreshes with the same token invalidate the
+/// grant and log the user out. The previous single global lock got that right
+/// but also made one account's 30-second refresh block every other account's
+/// proxy request, since each request resolves credentials through here.
+///
+/// Each lock is leaked into `'static` so the existing
+/// `MutexGuard<'static, ()>` hand-off through `finish_token_rotation` keeps
+/// working; the leak is bounded by the number of signed-in accounts.
+static TOKEN_LOCKS: OnceLock<Mutex<HashMap<String, &'static tokio::sync::Mutex<()>>>> =
+    OnceLock::new();
+
+fn token_lock(account_id: &str) -> &'static tokio::sync::Mutex<()> {
+    let registry = TOKEN_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(lock) = registry.get(account_id) {
+        return *lock;
+    }
+    let lock: &'static tokio::sync::Mutex<()> = Box::leak(Box::new(tokio::sync::Mutex::new(())));
+    registry.insert(account_id.to_string(), lock);
+    lock
+}
 
 pub fn start_login() -> Result<String, String> {
     let mut pending = PENDING_LOGIN.lock().map_err(|_| "accountError.busy")?;
@@ -1069,7 +1094,7 @@ async fn proxy_credentials_with_rejection_at(
     rejected_token: Option<&str>,
     native_dir: Option<PathBuf>,
 ) -> Result<Value, String> {
-    let guard = TOKEN_LOCK.lock().await;
+    let guard = token_lock(account_id).lock().await;
     if !valid_account_id(account_id) {
         return Err("accountError.invalidAccount".into());
     }
@@ -1290,7 +1315,7 @@ async fn refresh_account_quota_at(
     token_url: &str,
     usage_url: &str,
 ) -> Result<CodexAccountSummary, String> {
-    let mut guard = TOKEN_LOCK.lock().await;
+    let mut guard = token_lock(account_id).lock().await;
     if !valid_account_id(account_id) {
         return Err("accountError.invalidAccount".to_string());
     }
@@ -1805,10 +1830,12 @@ mod tests {
                         assert!(futures_util::poll!(&mut credentials).is_pending());
                     }
                 }
-                let guard =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), TOKEN_LOCK.lock())
-                        .await
-                        .unwrap();
+                let guard = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    token_lock(&metadata.id).lock(),
+                )
+                .await
+                .unwrap();
                 assert_eq!(calls.load(Ordering::SeqCst), 0);
                 assert_eq!(fs::read(&path).unwrap(), raw);
                 drop(guard);
@@ -1909,10 +1936,12 @@ mod tests {
                     fs::remove_file(&path).unwrap();
                 }
                 release.notify_one();
-                let guard =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), TOKEN_LOCK.lock())
-                        .await
-                        .unwrap();
+                let guard = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    token_lock(&metadata.id).lock(),
+                )
+                .await
+                .unwrap();
                 drop(guard);
             }
             if let Some(second) = second {

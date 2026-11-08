@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -22,6 +22,65 @@ const RELAY_FILENAME: &str = "claudedesktop.json";
 const RELAY_FILENAME_CLAUDECODE: &str = "claudecode.json";
 const RELAY_FILENAME_CLAUDESCIENCE: &str = "claudescience.json";
 
+/// Fixed marker older EchoBird builds wrote into `ANTHROPIC_AUTH_TOKEN` for the
+/// local bridge. Still accepted so an unmodified settings.json keeps working.
+const LOCAL_PROXY_TOKEN: &str = "echobird-local-proxy";
+
+/// Pull the caller's credential out of an Anthropic-style request.
+fn presented_token(headers: &HeaderMap) -> Option<&str> {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    {
+        let value = value.trim();
+        // Claude Desktop uses `inferenceGatewayAuthScheme: bearer`; Claude Code
+        // sets ANTHROPIC_AUTH_TOKEN, which its SDK sends as a Bearer token.
+        if let Some(token) = value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+        {
+            return Some(token.trim());
+        }
+        return Some(value);
+    }
+    headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+}
+
+/// This proxy spends the user's *real* upstream key, so it must not answer
+/// anonymous callers: loopback is not per-user, and any page in a browser can
+/// POST here, so an unauthenticated route is a free-inference / billing hole.
+/// EchoBird writes the relay key into both clients' configs, so the caller
+/// always has it.
+fn authorized(headers: &HeaderMap, relay: &Relay) -> bool {
+    presented_token(headers)
+        .is_some_and(|token| !token.is_empty() && (token == relay.api_key || token == LOCAL_PROXY_TOKEN))
+}
+
+/// Weaker check for the Claude Science route: that client authenticates with an
+/// opaque `encrypted_login` credential we cannot reproduce here, so validate
+/// presence only. Still blocks the cross-site path — a browser cannot attach an
+/// Authorization header without a preflight this server never approves.
+fn carries_credential(headers: &HeaderMap) -> bool {
+    presented_token(headers).is_some_and(|token| !token.is_empty())
+}
+
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "type": "error",
+            "error": {
+                "type": "authentication_error",
+                "message": "EchoBird proxy requires the API key configured for this Claude app.",
+            }
+        })),
+    )
+        .into_response()
+}
+
 struct Relay {
     base_url: String,
     api_key: String,
@@ -34,8 +93,12 @@ struct Relay {
 }
 
 /// Claude Desktop route — POST /v1/messages. Relay: claudedesktop.json.
-pub async fn handle_messages(state: State<AppState>, body: Bytes) -> Response {
-    handle_messages_with(state, body, RELAY_FILENAME).await
+pub async fn handle_messages(
+    state: State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle_messages_with(state, headers, body, RELAY_FILENAME).await
 }
 
 /// Claude Code route — POST /claudecode/v1/messages. Relay: claudecode.json.
@@ -43,12 +106,20 @@ pub async fn handle_messages(state: State<AppState>, body: Bytes) -> Response {
 /// Claude Desktop independent — the user can point each at a different
 /// upstream without one clobbering the other, even though both speak the
 /// same Anthropic Messages API and would otherwise collide on /v1/messages.
-pub async fn handle_messages_claudecode(state: State<AppState>, body: Bytes) -> Response {
-    handle_messages_with(state, body, RELAY_FILENAME_CLAUDECODE).await
+pub async fn handle_messages_claudecode(
+    state: State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle_messages_with(state, headers, body, RELAY_FILENAME_CLAUDECODE).await
 }
 
-pub async fn handle_messages_claudescience(state: State<AppState>, body: Bytes) -> Response {
-    handle_messages_with(state, body, RELAY_FILENAME_CLAUDESCIENCE).await
+pub async fn handle_messages_claudescience(
+    state: State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle_messages_with(state, headers, body, RELAY_FILENAME_CLAUDESCIENCE).await
 }
 
 pub async fn handle_models_claudescience() -> Response {
@@ -98,26 +169,11 @@ fn science_models_response(relay: &Relay) -> Response {
 
 async fn handle_messages_with(
     State(state): State<AppState>,
+    headers: HeaderMap,
     body: Bytes,
     relay_filename: &str,
 ) -> Response {
-    let mut req_body: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": format!("Invalid JSON body: {}", e),
-                    }
-                })),
-            )
-                .into_response();
-        }
-    };
-
+    // Read the relay first (cheap) so we can validate against its key.
     let relay = match read_relay(relay_filename) {
         Some(r) => r,
         None => {
@@ -128,6 +184,32 @@ async fn handle_messages_with(
                     "error": {
                         "type": "service_unavailable",
                         "message": "No active model configured in EchoBird for this Claude app. Open EchoBird and apply a model.",
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let permitted = if relay_filename == RELAY_FILENAME_CLAUDESCIENCE {
+        carries_credential(&headers)
+    } else {
+        authorized(&headers, &relay)
+    };
+    if !permitted {
+        return unauthorized();
+    }
+
+    let mut req_body: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": format!("Invalid JSON body: {}", e),
                     }
                 })),
             )

@@ -102,6 +102,21 @@ export function MotherAgentMain() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const paginationGenerationRef = useRef(0);
 
+  // `slice(-displayCount)` shifts every item one slot to the left once the list
+  // outgrows the window. Index keys then hand each ChatBubble its neighbour's
+  // content, memo() never matches, and every streaming token re-parses ~30
+  // markdown blocks. Absolute (unshifted) indexes stay stable, so React reuses
+  // the right node. The last-assistant lookup moves out of the map too — it was
+  // O(n²) because every assistant bubble rebuilt a suffix array.
+  const chatWindowStart = Math.max(0, visibleChatOutput.length - displayCount);
+  const chatWindow = visibleChatOutput.slice(chatWindowStart);
+  const lastAssistantOffset = chatWindow.reduce<number>(
+    (last, msg, index) => (msg.type === 'assistant' ? index : last),
+    -1,
+  );
+  const lastOutputIsAssistant =
+    visibleChatOutput[visibleChatOutput.length - 1]?.type === 'assistant';
+
   // Re-snap to bottom every time the user opens this page — not just on first
   // hydration (the component stays mounted via CSS hidden, so a one-shot
   // initial-scroll flag misses subsequent visits).
@@ -261,11 +276,12 @@ export function MotherAgentMain() {
                 [0, 1, 2].map((i) => (
                   <ChatBubble key={`sk-${i}`} role="skeleton" content="" variant="mother" />
                 ))}
-              {visibleChatOutput.slice(-displayCount).map((msg, i, arr) => {
+              {chatWindow.map((msg, i) => {
+                const key = chatWindowStart + i;
                 if (msg.type === 'user') {
                   return (
                     <ChatBubble
-                      key={i}
+                      key={key}
                       role="user"
                       content={msg.text}
                       variant="mother"
@@ -276,7 +292,7 @@ export function MotherAgentMain() {
                 if (msg.type === 'tool_call') {
                   return (
                     <ToolCallCard
-                      key={`${i}-${msg.id}`}
+                      key={key}
                       name={msg.name}
                       args={msg.args}
                       status={msg.status}
@@ -285,12 +301,10 @@ export function MotherAgentMain() {
                   );
                 }
                 if (msg.type === 'assistant') {
-                  const isLast = arr.slice(i + 1).every((m) => m.type !== 'assistant');
-                  const lastOutput = visibleChatOutput[visibleChatOutput.length - 1];
-                  const isCurrentResponse = isLast && lastOutput?.type === 'assistant';
+                  const isCurrentResponse = i === lastAssistantOffset && lastOutputIsAssistant;
                   return (
                     <ChatBubble
-                      key={i}
+                      key={key}
                       role="assistant"
                       content={msg.text}
                       variant="mother"
@@ -303,7 +317,7 @@ export function MotherAgentMain() {
                     ? t(msg.i18nKey as import('../../i18n/types').TKey)
                     : msg.text;
                   return (
-                    <div key={i} className="flex justify-center my-4">
+                    <div key={key} className="flex justify-center my-4">
                       <span className="text-cyber-text-muted/35 text-xs font-mono">{text}</span>
                     </div>
                   );
@@ -312,7 +326,7 @@ export function MotherAgentMain() {
                   const text = msg.i18nKey
                     ? t(msg.i18nKey as import('../../i18n/types').TKey)
                     : msg.text;
-                  return <ChatBubble key={i} role="error" content={text} variant="mother" />;
+                  return <ChatBubble key={key} role="error" content={text} variant="mother" />;
                 }
                 return null;
               })}

@@ -11,6 +11,14 @@
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+/// Largest request body we will buffer, matching the Anthropic proxy's limit.
+/// `Content-Length` is attacker-controlled, and it used to size a `vec![0u8; n]`
+/// directly — one header claiming ~1e11 bytes aborted the process.
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Error prefix the connection handler turns into a 413.
+const PAYLOAD_TOO_LARGE: &str = "payload too large";
+
 // ─── Entry Point ───
 
 pub async fn run_unified_proxy(
@@ -21,7 +29,12 @@ pub async fn run_unified_proxy(
 ) -> Result<(), String> {
     use tauri::Emitter;
 
-    let addr = format!("0.0.0.0:{}", listen_port);
+    // Loopback only. This proxy has no authentication and forwards whatever it
+    // receives straight to llama-server, so binding 0.0.0.0 silently turned
+    // every machine on the user's Wi-Fi into a free inference endpoint (and the
+    // log lines below claim 127.0.0.1, which hid the exposure). llama-server
+    // itself is started with `--host 127.0.0.1` for the same reason.
+    let addr = format!("127.0.0.1:{}", listen_port);
     let listener = TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("Failed to bind proxy on {}: {}", addr, e))?;
@@ -85,7 +98,22 @@ async fn handle_proxy_connection(
     use tokio::io::AsyncWriteExt;
 
     // Bug 1 Fix: read the complete HTTP request (headers + full body)
-    let raw = read_full_http_request(&mut stream).await?;
+    let raw = match read_full_http_request(&mut stream).await {
+        Ok(raw) => raw,
+        Err(error) => {
+            // Answer oversized/broken requests instead of dropping the socket,
+            // so the caller gets a status it can act on.
+            let status = if error.starts_with(PAYLOAD_TOO_LARGE) {
+                "413 Payload Too Large"
+            } else {
+                "400 Bad Request"
+            };
+            let resp =
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(resp.as_bytes()).await;
+            return Err(error);
+        }
+    };
     if raw.is_empty() {
         return Ok(());
     }
@@ -181,6 +209,13 @@ async fn read_full_http_request(stream: &mut tokio::net::TcpStream) -> Result<Ve
 
     // How many body bytes we already have in buf
     let body_already = buf.len().saturating_sub(header_end);
+
+    if content_length > MAX_REQUEST_BODY_BYTES {
+        return Err(format!(
+            "{PAYLOAD_TOO_LARGE}: content-length {content_length} exceeds \
+             {MAX_REQUEST_BODY_BYTES} bytes"
+        ));
+    }
 
     // Phase 3: read remaining body bytes
     if content_length > body_already {

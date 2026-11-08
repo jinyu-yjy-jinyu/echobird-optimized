@@ -245,11 +245,23 @@ fn strip_jsonc_comments(input: &str) -> String {
     out
 }
 
+/// Write a config file atomically and privately.
+///
+/// `fs::write` truncates first: a crash, a full disk, or two concurrent applies
+/// (model switch racing restore-official) can leave a half-written config
+/// behind. These files also carry plaintext API keys, which the default 0o644
+/// umask exposes to every other user on the box. Reuse the account layer's
+/// tested temp-file + fsync + rename writer (0o600 on Unix, symlink-preserving).
+fn write_config_file(path: &Path, content: &str) -> Result<(), String> {
+    crate::services::native_account_files::write_private_file(path, content.as_bytes())
+        .map_err(|_| format!("Failed to write {}", path.display()))
+}
+
 /// Write JSON value to file with pretty formatting
 fn write_json_file(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     ensure_parent(path);
     let content = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    write_config_file(path, &content)
 }
 
 /// `serde_yaml_ng` shorthand: a string value.
@@ -291,7 +303,7 @@ fn yaml_get<'a>(value: &'a serde_yaml_ng::Value, key: &str) -> Option<&'a serde_
 fn write_yaml_file(path: &Path, value: &serde_yaml_ng::Value) -> Result<(), String> {
     ensure_parent(path);
     let content = serde_yaml_ng::to_string(value).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    write_config_file(path, &content)
 }
 
 /// Look up a model's real input modalities. Returns `["text"]` for models the
