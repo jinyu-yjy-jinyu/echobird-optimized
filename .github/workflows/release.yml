@@ -176,7 +176,7 @@ jobs:
       # so rustup would install the cross target into a toolchain the build
       # never uses ("Target x86_64-apple-darwin is not installed").
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@1.93.0
+        uses: dtolnay/rust-toolchain@1.120.0
 
       # rust-toolchain.toml overrides the default toolchain inside the repo, so
       # the extra target has to be added for whichever toolchain is active here.
