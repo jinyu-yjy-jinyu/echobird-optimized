@@ -95,20 +95,19 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $assets = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | ForEach-Object { $_.FullName })
-          $draftFlag = @()
-          if ($env:PUBLISH -ne 'true') { $draftFlag = @('--draft') }
+          if ($assets.Count -eq 0) { throw "No installer produced" }
 
           gh release view $env:TAG 2>$null | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            $notes = @"
-          Windows x64 installer built from `${{ github.sha }}` by GitHub Actions.
+          $exists = ($LASTEXITCODE -eq 0)
 
-          - Unsigned build: Windows SmartScreen may warn on first run.
-          - Requires the Microsoft Edge WebView2 runtime (bundled with Windows 11 and current Windows 10).
-          "@
-            gh release create $env:TAG $assets --target "${{ github.sha }}" --title "EchoBird $env:TAG" --notes $notes @draftFlag --latest
-          } else {
+          if ($exists) {
             gh release upload $env:TAG $assets --clobber
+          } else {
+            $notes = "Windows x64 installer built from commit ${{ github.sha }} by GitHub Actions.`n`nUnsigned build: Windows SmartScreen may warn on first run.`nRequires the Microsoft Edge WebView2 runtime (bundled with Windows 11 and current Windows 10)."
+            $ghArgs = @('release', 'create', $env:TAG) + $assets + @('--target', '${{ github.sha }}', '--title', "EchoBird $env:TAG", '--notes', $notes)
+            if ($env:PUBLISH -eq 'true') { $ghArgs += '--latest' } else { $ghArgs += '--draft' }
+            gh $ghArgs
           }
+          if ($LASTEXITCODE -ne 0) { throw "gh release command failed" }
 
           gh release view $env:TAG --json url,isDraft,assets --jq '"release: \(.url) draft=\(.isDraft)", (.assets[] | "  asset: \(.name) (\(.size) bytes)")'
