@@ -25,6 +25,10 @@ on:
         description: 'Publish the release once every platform has built'
         type: boolean
         default: true
+      only:
+        description: 'Build every platform (all), or a single target triple to fill a gap'
+        type: string
+        default: all
 
 # Never let two runs upload to the same tag at once.
 concurrency:
@@ -105,37 +109,56 @@ jobs:
           gh release view "$TAG" --repo "$REPO" --json databaseId -q .databaseId > /tmp/release_id
           echo "release_id=$(cat /tmp/release_id)" >> "$GITHUB_OUTPUT"
 
+  plan:
+    # The platform list lives here so a failed target can be rebuilt on its own
+    # (workflow input `only`) instead of re-running all five. Job-level `if`
+    # cannot see `matrix`, so the matrix itself is filtered here.
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+
+          platforms = [
+              {"platform": "windows-latest", "rust-target": "x86_64-pc-windows-msvc",
+               "args": "--bundles nsis,msi"},
+              # Both macOS slices are built from the arm64 image: the Apple SDK
+              # is universal, so one runner yields arm64 and x64 installers.
+              {"platform": "macos-26", "rust-target": "aarch64-apple-darwin",
+               "args": "--target aarch64-apple-darwin --bundles dmg"},
+              {"platform": "macos-26", "rust-target": "x86_64-apple-darwin",
+               "args": "--target x86_64-apple-darwin --bundles dmg"},
+              # deb + rpm only. An AppImage would carry its own webkit/gtk
+              # runtime (~80 MB); deb/rpm use the system webkit2gtk (~11 MB).
+              {"platform": "ubuntu-24.04", "rust-target": "x86_64-unknown-linux-gnu",
+               "args": "--bundles deb,rpm"},
+              {"platform": "ubuntu-24.04-arm", "rust-target": "aarch64-unknown-linux-gnu",
+               "args": "--bundles deb,rpm"},
+          ]
+
+          only = (os.environ.get("ONLY") or "all").strip()
+          if only not in ("all", ""):
+              known = {entry["rust-target"] for entry in platforms}
+              if only not in known:
+                  sys.exit(f"unknown target '{only}'; expected all or one of {sorted(known)}")
+              platforms = [entry for entry in platforms if entry["rust-target"] == only]
+
+          print("matrix=" + json.dumps({"include": platforms}))
+          PY
+
   build:
-    needs: [preflight, create-release]
+    needs: [preflight, create-release, plan]
     permissions:
       contents: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            rust-target: x86_64-pc-windows-msvc
-            args: '--bundles nsis,msi'
-
-          # Both macOS slices are built from the arm64 image: the Apple SDK is
-          # universal, so one runner yields arm64 and x64 installers.
-          - platform: macos-26
-            rust-target: aarch64-apple-darwin
-            args: '--target aarch64-apple-darwin --bundles dmg'
-
-          - platform: macos-26
-            rust-target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin --bundles dmg'
-
-          # deb + rpm only. An AppImage would bundle its own webkit/gtk runtime
-          # (~80 MB per file); deb/rpm use the system webkit2gtk (~11 MB).
-          - platform: ubuntu-24.04
-            rust-target: x86_64-unknown-linux-gnu
-            args: '--bundles deb,rpm'
-
-          - platform: ubuntu-24.04-arm
-            rust-target: aarch64-unknown-linux-gnu
-            args: '--bundles deb,rpm'
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -148,11 +171,21 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Pinned to 1.93 to match rust-toolchain.toml and ci.yml.
-      - name: Install Rust 1.93 (pinned)
-        uses: dtolnay/rust-toolchain@1.93
-        with:
-          targets: ${{ matrix.rust-target }}
+      # Pinned to the same channel as rust-toolchain.toml. The two must match
+      # exactly: `1.93` and `1.93.0` resolve to different toolchain directories,
+      # so rustup would install the cross target into a toolchain the build
+      # never uses ("Target x86_64-apple-darwin is not installed").
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@1.93.0
+
+      # rust-toolchain.toml overrides the default toolchain inside the repo, so
+      # the extra target has to be added for whichever toolchain is active here.
+      - name: Add the cross-compilation target
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.rust-target }}"
+          rustup target list --installed
+          rustc --version
 
       - uses: swatinem/rust-cache@v2
         with:
